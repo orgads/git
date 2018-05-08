@@ -407,6 +407,7 @@ static int do_unlink(const wchar_t *wpathname)
 int mingw_unlink(const char *pathname)
 {
 	int tries = 0;
+	int file_errno = 0;
 	wchar_t wpathname[MAX_LONG_PATH];
 	if (xutftowcs_long_path(wpathname, pathname) < 0)
 		return -1;
@@ -416,6 +417,7 @@ int mingw_unlink(const char *pathname)
 		_wchmod(wpathname, 0666);
 		if (!do_unlink(wpathname))
 			return 0;
+		file_errno = err_win_to_posix(GetLastError());
 		if (!is_file_in_use_error(GetLastError()))
 			break;
 		/*
@@ -425,6 +427,7 @@ int mingw_unlink(const char *pathname)
 		 */
 		if (!_wrmdir(wpathname))
 			return 0;
+		errno = file_errno;
 	} while (retry_ask_yes_no(&tries, "Unlink of file '%s' failed. "
 			"Should I try again?", pathname));
 	return -1;
