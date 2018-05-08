@@ -501,6 +501,50 @@ static wchar_t *normalize_ntpath(wchar_t *wbuf)
 	return wbuf;
 }
 
+/* rename and unlink a file. This is needed for the ability to recreate a file
+ * with the same name, for example on checkout which unlinks and recreates the file */
+static int rename_and_unlink(const wchar_t *pathname, int (*unlinker)(const wchar_t *))
+{
+	int res;
+	wchar_t temppath[MAX_LONG_PATH];
+	*temppath = 0;
+
+	/* leave space for the .unlink_XXXXXX extension */
+	wcsncat(temppath, pathname, sizeof(temppath) - 15);
+	wcsncat(temppath, L".unlink_XXXXXX", sizeof(temppath));
+	if (!_wmktemp(temppath) || !MoveFileExW(pathname, temppath, 0))
+		return 1;
+	res = unlinker(temppath);
+	if (res) {
+		const DWORD err = GetLastError();
+		MoveFileExW(temppath, pathname, 0);
+		SetLastError(err);
+	}
+	return res;
+}
+
+static int needs_rename_before_unlink(const wchar_t *pathname, HANDLE *handle)
+{
+	/* If the file is opened by another process, rename it before unlinking */
+	*handle = CreateFileW(pathname, GENERIC_WRITE, FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	return *handle == INVALID_HANDLE_VALUE && is_file_in_use_error(GetLastError());
+}
+
+static int safe_unlink(const wchar_t *wpathname, int (*unlinker)(const wchar_t *))
+{
+	int res;
+	DWORD err;
+	HANDLE handle;
+
+	if (needs_rename_before_unlink(wpathname, &handle))
+		return rename_and_unlink(wpathname, unlinker);
+	res = unlinker(wpathname);
+	err = GetLastError();
+	CloseHandle(handle);
+	SetLastError(err);
+	return res;
+}
+
 int mingw_unlink(const char *pathname)
 {
 	int tries = 0;
@@ -514,7 +558,7 @@ int mingw_unlink(const char *pathname)
 	do {
 		/* read-only files cannot be removed */
 		_wchmod(wpathname, 0666);
-		if (!_wunlink(wpathname))
+		if (!safe_unlink(wpathname, _wunlink))
 			return 0;
 		if (!is_file_in_use_error(GetLastError()))
 			break;
@@ -523,7 +567,7 @@ int mingw_unlink(const char *pathname)
 		 * ERROR_ACCESS_DENIED (EACCES), so try _wrmdir() as well. This is the
 		 * same error we get if a file is in use (already checked above).
 		 */
-		if (!_wrmdir(wpathname))
+		if (!safe_unlink(wpathname, _wrmdir))
 			return 0;
 	} while (retry_ask_yes_no(&tries, "Unlink of file '%s' failed. "
 			"Should I try again?", pathname));
@@ -560,7 +604,9 @@ int mingw_rmdir(const char *pathname)
 		return -1;
 
 	do {
-		if (!_wrmdir(wpathname)) {
+		int res = tries > 0 ? safe_unlink(wpathname, _wrmdir)
+				    : _wrmdir(wpathname);
+		if (!res) {
 			invalidate_lstat_cache();
 			return 0;
 		}
