@@ -3,6 +3,7 @@
 #include <conio.h>
 #include <wchar.h>
 #include <winioctl.h>
+#include <ktmw32.h>
 #include "../strbuf.h"
 #include "../run-command.h"
 #include "../cache.h"
@@ -12,6 +13,10 @@
 #include "../string-list.h"
 
 #define HCAST(type, handle) ((type)(intptr_t)handle)
+
+#ifndef ERROR_TRANSACTIONAL_CONFLICT
+#define ERROR_TRANSACTIONAL_CONFLICT 6800
+#endif
 
 int err_win_to_posix(DWORD winerr)
 {
@@ -127,6 +132,7 @@ int err_win_to_posix(DWORD winerr)
 	case ERROR_WAIT_NO_CHILDREN: error = ECHILD; break;
 	case ERROR_WRITE_FAULT: error = EIO; break;
 	case ERROR_WRITE_PROTECT: error = EROFS; break;
+	case ERROR_TRANSACTIONAL_CONFLICT: error = EPERM; break;
 	}
 	return error;
 }
@@ -136,6 +142,7 @@ static inline int is_file_in_use_error(DWORD errcode)
 	switch (errcode) {
 	case ERROR_SHARING_VIOLATION:
 	case ERROR_ACCESS_DENIED:
+	case ERROR_TRANSACTIONAL_CONFLICT:
 		return 1;
 	}
 
@@ -383,6 +390,20 @@ static wchar_t *normalize_ntpath(wchar_t *wbuf)
 	return wbuf;
 }
 
+static int do_unlink(const wchar_t *wpathname)
+{
+#if _WIN32_WINNT >= 0x0600
+	HANDLE transaction = CreateTransaction(NULL, 0, 0, 0, 0, 0, NULL);
+	BOOL result = DeleteFileTransactedW(wpathname, transaction);
+	if (result)
+		CommitTransaction(transaction);
+	CloseHandle(transaction);
+	return result ? 0 : -1;
+#else
+	return _wunlink(wpathname);
+#endif
+}
+
 int mingw_unlink(const char *pathname)
 {
 	int tries = 0;
@@ -393,7 +414,7 @@ int mingw_unlink(const char *pathname)
 	do {
 		/* read-only files cannot be removed */
 		_wchmod(wpathname, 0666);
-		if (!_wunlink(wpathname))
+		if (!do_unlink(wpathname))
 			return 0;
 		if (!is_file_in_use_error(GetLastError()))
 			break;
