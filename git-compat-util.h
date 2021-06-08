@@ -1281,7 +1281,7 @@ int open_nofollow(const char *path, int flags);
 # define SHELL_PATH "/bin/sh"
 #endif
 
-#ifndef _POSIX_THREAD_SAFE_FUNCTIONS
+#if !defined(_POSIX_THREAD_SAFE_FUNCTIONS) || defined(WIN32)
 static inline void flockfile(FILE *fh)
 {
 	; /* nothing */
