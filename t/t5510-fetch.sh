@@ -1727,6 +1727,29 @@ test_expect_success REFFILES "HEAD is updated even with conflicts" '
 	)
 '
 
+
+test_expect_success 'fetch.force' '
+	git init force-test &&
+	(
+		cd force-test &&
+		test_commit one &&
+		test_commit two &&
+		git branch -f master one &&
+		git init other &&
+		(
+			cd other &&
+			test_commit three &&
+			git branch -M master
+		) &&
+		git remote add other other &&
+		test_must_fail git fetch other master:master &&
+		git -c fetch.force=true fetch other master:master &&
+		git rev-parse master >actual &&
+		git -C other rev-parse master >expect &&
+		test_cmp expect actual
+	)
+'
+
 . "$TEST_DIRECTORY"/lib-httpd.sh
 start_httpd
 
